@@ -27,8 +27,9 @@ import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.project.workspace.StandardLibrary
 import org.rust.lang.core.psi.RUST_STRUCTURE_CHANGE_TOPIC
 import org.rust.lang.core.psi.RustStructureChangeListener
-import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.isNotRustFile
+import org.rust.lang.core.psi.rustFile
+import org.rust.lang.core.stubs.index.RsIncludeMacroIndex
 import org.rust.openapiext.toPsiFile
 
 /**
@@ -38,27 +39,26 @@ import org.rust.openapiext.toPsiFile
  * and if not successful show the actual notification to the user.
  */
 class MissingToolchainNotificationProvider(
-    private val project: Project,
-    private val notifications: EditorNotifications
+    private val project: Project
 ) : EditorNotifications.Provider<EditorNotificationPanel>() {
 
     init {
-        project.messageBus.connect(project).apply {
+        project.messageBus.connect().apply {
             subscribe(RustProjectSettingsService.TOOLCHAIN_TOPIC,
                 object : RustProjectSettingsService.ToolchainListener {
                     override fun toolchainChanged() {
-                        notifications.updateAllNotifications()
+                        updateAllNotifications()
                     }
                 })
 
             subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, object : CargoProjectsService.CargoProjectsListener {
                 override fun cargoProjectsUpdated(projects: Collection<CargoProject>) {
-                    notifications.updateAllNotifications()
+                    updateAllNotifications()
                 }
             })
             subscribe(RUST_STRUCTURE_CHANGE_TOPIC, object : RustStructureChangeListener {
                 override fun rustStructureChanged(file: PsiFile?, changedElement: PsiElement?) {
-                    notifications.updateAllNotifications()
+                    updateAllNotifications()
                 }
             })
         }
@@ -66,6 +66,7 @@ class MissingToolchainNotificationProvider(
 
     override fun getKey(): Key<EditorNotificationPanel> = PROVIDER_KEY
 
+    // BACKCOMPAT: 2018.3
     override fun createNotificationPanel(file: VirtualFile, editor: FileEditor): EditorNotificationPanel? {
         if (file.isNotRustFile || isNotificationDisabled()) return null
         if (guessAndSetupRustProject(project)) return null
@@ -84,9 +85,10 @@ class MissingToolchainNotificationProvider(
             //TODO: more precise check here
             return createNoCargoProjectForFilePanel()
 
-        val psiFile = file.toPsiFile(project) as RsElement
-        if (psiFile.crateRoot == null) {
-            return createFileNotIncludedInModulesPanel()
+        val psiFile = file.toPsiFile(project)?.rustFile
+        if (psiFile != null) {
+            val mod = RsIncludeMacroIndex.getIncludingMod(psiFile) ?: psiFile
+            if (mod.crateRoot == null) return createFileNotIncludedInModulesPanel()
         }
 
         val workspace = cargoProject.workspace ?: return null
@@ -113,7 +115,7 @@ class MissingToolchainNotificationProvider(
             }
             createActionLabel("Do not show again") {
                 disableNotification()
-                notifications.updateAllNotifications()
+                updateAllNotifications()
             }
         }
 
@@ -129,7 +131,7 @@ class MissingToolchainNotificationProvider(
             createActionLabel("Attach", "Rust.AttachCargoProject")
             createActionLabel("Do not show again") {
                 disableNotification()
-                notifications.updateAllNotifications()
+                updateAllNotifications()
             }
         }
 
@@ -147,14 +149,18 @@ class MissingToolchainNotificationProvider(
                         NotificationType.ERROR
                     )
                 }
-                notifications.updateAllNotifications()
+                updateAllNotifications()
             }
 
             createActionLabel("Do not show again") {
                 disableNotification()
-                notifications.updateAllNotifications()
+                updateAllNotifications()
             }
         }
+
+    private fun updateAllNotifications() {
+        EditorNotifications.getInstance(project).updateAllNotifications()
+    }
 
     private fun disableNotification() {
         PropertiesComponent.getInstance(project).setValue(NOTIFICATION_STATUS_KEY, true)
@@ -164,7 +170,7 @@ class MissingToolchainNotificationProvider(
         PropertiesComponent.getInstance(project).getBoolean(NOTIFICATION_STATUS_KEY)
 
     companion object {
-        private val NOTIFICATION_STATUS_KEY = "org.rust.hideToolchainNotifications"
+        private const val NOTIFICATION_STATUS_KEY = "org.rust.hideToolchainNotifications"
 
         private val PROVIDER_KEY: Key<EditorNotificationPanel> = Key.create("Setup Rust toolchain")
     }
